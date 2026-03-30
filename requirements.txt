@@ -2,11 +2,10 @@
 opencv-python>=4.8.0
 numpy>=1.24.0
 
-# Future ML dependencies (uncomment when needed)
-# ultralytics>=8.0.0          # YOLOv8
-# torch>=2.0.0                # PyTorch
-# torchvision>=0.15.0         # PyTorch Vision
-# Pillow>=9.5.0              # Image processing
+ultralytics>=8.0.0          # YOLOv8
+torch>=2.0.0                # PyTorch
+torchvision>=0.15.0         # PyTorch Vision
+ Pillow>=9.5.0              # Image processing
 
 # Tracking (uncomment when implementing)
 # deep-sort-realtime>=0.2.0  # DeepSORT tracking
