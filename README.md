@@ -6,20 +6,18 @@
 Dự án này xây dựng hệ thống phát hiện hành vi vi phạm giao thông dựa trên Computer Vision, Deep Learning và Tracking. 
 
 Hệ thống có khả năng:
-- Phát hiện và theo dõi phương tiện giao thông 
-- Phát hiện hành vi vượt đèn đỏ 
-- Phát hiện không đội mũ bảo hiểm 
-- Phát hiện chở quá số người quy định
-- Tự động phát hiện khôi phục nhận diện biển số 
+- Phát hiện và theo dõi phương tiện giao thông
+- Phát hiện hành vi vượt đèn đỏ
+- Phát hiện không đội mũ bảo hiểm và chở quá số người (segmentation người / đầu / mũ)
 - Tự động chụp ảnh phương tiện vi phạm
 
-Hệ thống được thiết kế theo kiến trúc nhiều mô hình (multi-model pipeline), phản ánh đúng quy trình của camera giao thông thông minh trong thực tế.
+Hệ thống được thiết kế theo **pipeline hai mô hình** (vehicle detection + hybrid segmentation), phản ánh quy trình camera giao thông thông minh trong thực tế.
 
 ## Mục tiêu dự án
 
-- Ứng dụng YOLO + Tracking + Segmentation vào bài toán giao thông
-- Kết hợp nhiều mô hình AI cho các nhiệm vụ khác nhau
-- Xây dựng pipeline xử lý hoàn chỉnh từ video → vi phạm → biển số
+- Ứng dụng YOLO + Tracking + Segmentation hybrid (CNN + attention) vào bài toán giao thông
+- Hai mô hình chuyên biệt: phương tiện và người–mũ–đầu
+- Xây dựng pipeline từ video → phát hiện vi phạm → bằng chứng hình ảnh
 - Phục vụ mục đích nghiên cứu – học tập – demo hệ thống giám sát giao thông
 
 ## Kiến trúc tổng thể hệ thống
@@ -29,17 +27,9 @@ Camera / Video
       ↓
 Model 1: Vehicle Detection + Tracking
       ↓
-Phát hiện hành vi vi phạm (logic)
+Phát hiện hành vi vi phạm (logic) + Trigger Capture (khi vi phạm)
       ↓
-Trigger Capture (chỉ khi vi phạm)
-      ↓
-Model 2: Helmet & People Detection
-      ↓
-Model 3: License Plate Detection
-      ↓
-Super Resolution / Deblur (nếu cần)
-      ↓
-OCR – Nhận dạng biển số
+Model 2: YOLOv8-Seg + CBAM + ViTs (helmet / head / person)
       ↓
 Lưu DB & Xuất báo cáo vi phạm
 ```
@@ -57,56 +47,86 @@ Lưu DB & Xuất báo cáo vi phạm
 - YOLOv8 (Detection hoặc Segmentation)
 - DeepSORT / ByteTrack
 
-**Class label**
-- motorbike
-- car
-- person
-- traffic_light (hoặc red_light / green_light)
+**Class label (checkpoint `vietnam_vehicle_v2`)**
+- `car`, `motocycle` (ghi chú: tên lớp trong dataset), `truck`, `bus`
 
 **Output**
 - Bounding box / mask
 - Track ID
 - Quỹ đạo di chuyển
 
-### Model 2 – Helmet & Overloading Detection
+#### Kết quả huấn luyện – `VehicleModel/vietnam_vehicle_v2`
+
+Dữ liệu huấn luyện phản ánh giao thông Việt Nam: lớp **xe máy** và **ô tô** chiếm đa số; **xe tải** và **xe buýt** ít mẫu hơn (mất cân bằng lớp). Phần lớn bbox có kích thước nhỏ trên khung hình (xe ở xa / góc rộng).
+
+![Phân bố lớp và thống kê bbox – labels](VehicleModel/vietnam_vehicle_v2/labels.jpg)
+
+**Đường cong Precision–Recall (mAP@0.5 theo lớp)**
+
+| Lớp | mAP@0.5 |
+|-----|---------|
+| car | 0.946 |
+| motocycle | 0.905 |
+| truck | 0.904 |
+| bus | 0.795 |
+| **Trung bình (all classes)** | **0.888** |
+
+![Precision–Recall curve](VehicleModel/vietnam_vehicle_v2/BoxPR_curve.png)
+
+**Đường cong F1 theo ngưỡng confidence**
+
+- Điểm tối ưu gợi ý (trung bình mọi lớp): **F1 ≈ 0.84** tại **confidence ≈ 0.394** (điều chỉnh theo ưu tiên precision hay recall khi triển khai).
+
+![F1–Confidence curve](VehicleModel/vietnam_vehicle_v2/BoxF1_curve.png)
+
+**Precision và Recall theo confidence**
+
+![Precision–Confidence curve](VehicleModel/vietnam_vehicle_v2/BoxP_curve.png)
+
+![Recall–Confidence curve](VehicleModel/vietnam_vehicle_v2/BoxR_curve.png)
+
+**Ma trận nhầm lẫn**
+
+- Lớp **bus** yếu nhất so với các lớn còn lại; có nhầm **bus → car** và tỉ lệ **bus → background**.
+- Cần chú ý **false positive**: vùng nền đôi khi bị dự đoán thành `car` / `motocycle` — có thể bổ sung mẫu nền âm (hard negatives) hoặc tinh chỉnh ngưỡng confidence.
+
+![Confusion matrix (normalized)](VehicleModel/vietnam_vehicle_v2/confusion_matrix_normalized.png)
+
+![Confusion matrix (số đếm)](VehicleModel/vietnam_vehicle_v2/confusion_matrix.png)
+
+### Model 2 – Segmentation người / đầu / mũ (Hybrid YOLOv8-Seg + CBAM + ViTs)
 
 **Nhiệm vụ**
-- Phát hiện người đội mũ / không đội mũ
-- Phát hiện hành vi chở quá số người
+- Phân đoạn (mask) **person**, **head**, **helmet** để suy ra không đội mũ và ước lượng số người trên xe
+- Phát hiện hành vi chở quá số người (kết hợp logic với Model 1)
 
-**Dữ liệu**
-- Ảnh crop từ output Model 1 (xe máy + người)
+**Kiến trúc: mô hình hybrid hoàn chỉnh**
 
-**Class label**
-- person
-- helmet
-- head (hoặc no_helmet)
+| Thành phần | Vai trò |
+|------------|--------|
+| **ViTs / Transformer (Backbone)** | Thu ngữ cảnh toàn cục, hỗ trợ vật thể nhỏ / khó (che khuất, nền rối) |
+| **CBAM (Neck / Head)** | Tinh chỉnh không gian–kênh, giảm nhiễu, cải thiện độ sắc nét biên mặt nạ |
 
-**Logic vi phạm**
+**Cộng hưởng (synergy):** Transformer bù đắp giới hạn receptive field của CNN thuần; CBAM sau đó làm nổi bật vùng có ý nghĩa và ổn định mask so với chỉ dùng CNN.
 
-*Không đội mũ:*
-- ≥ 3 frame liên tiếp không có helmet → vi phạm
+**Công nghệ**
+- YOLOv8-Seg làm khung detection/segmentation
+- CBAM nhúng ở neck/head theo thiết kế của bạn
+- Khối ViT/Swin (hoặc tương đương) ở backbone
 
-*Chở quá số người:*
-- 1 motorbike + số person > 2 → vi phạm
-
-### Model 3 – License Plate Detection & Recognition
-
-**Nhiệm vụ**
-- Phát hiện biển số xe
-- Khôi phục biển số bị mờ
-- Nhận dạng ký tự biển số
-
-**Pipeline**
-```
-YOLO detect plate
-→ Crop plate
-→ Super Resolution / Deblur (nếu mờ)
-→ OCR (PaddleOCR / EasyOCR)
-```
+**Dữ liệu đầu vào**
+- Ảnh / crop từ vùng quan tâm sau Model 1 (ví dụ xe máy + người)
 
 **Class label**
-- license_plate
+- `person`
+- `head`
+- `helmet`
+
+**Logic vi phạm (gợi ý)**
+
+*Không đội mũ:* ≥ N frame liên tiếp không có `helmet` trên người cướp xe → vi phạm (N tùy cấu hình).
+
+*Chở quá số người:* một phương tiện (ví dụ xe máy từ Model 1) + số instance `person` vượt ngưỡng quy định → vi phạm.
 
 ## Xử lý & tổ chức dữ liệu
 
