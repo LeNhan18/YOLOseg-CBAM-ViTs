@@ -44,7 +44,7 @@ Thumbs.db
 # Temporary files
 storage/temp/*
 !storage/temp/.gitkeep
-
+VehicleModel/vietnam_vehicle_v2/weights
 # Database
 *.db
 *.sqlite
