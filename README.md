@@ -1,94 +1,111 @@
 # SystemTrafficLaw
-# Traffic Violation Detection System using Deep Learning
 
-## Giới thiệu
+## Hệ thống phát hiện vi phạm giao thông dựa trên học sâu và pipeline đa mô hình
 
-Dự án này xây dựng hệ thống phát hiện hành vi vi phạm giao thông dựa trên Computer Vision, Deep Learning và Tracking. 
+**Traffic Violation Detection System using Deep Learning and Multi-Model Pipeline**
 
-Hệ thống có khả năng:
-- Phát hiện và theo dõi phương tiện giao thông
-- Phát hiện hành vi vượt đèn đỏ
-- Phát hiện không đội mũ bảo hiểm và chở quá số người (segmentation người / đầu / mũ)
-- Tự động chụp ảnh phương tiện vi phạm
+---
 
-**Trọng tâm nghiên cứu và triển khai** là **Model 2 — YOLOv8-Seg hybrid CBAM + ViT**: kết hợp **Transformer ở backbone** (ngữ cảnh toàn cục, vật thể nhỏ/khó) với **CBAM ở neck/head** (tinh chỉnh không gian–kênh, mask sắc nét). Model 1 (phát hiện phương tiện) đóng vai trò **tiền xử lý & định vị ROI**, cung cấp đầu vào cho pipeline segmentation.
+## Tóm tắt (Abstract)
 
-Hệ thống được thiết kế theo **pipeline hai mô hình** (vehicle detection → hybrid segmentation), phản ánh quy trình camera giao thông thông minh trong thực tế.
+Nghiên cứu hướng tới **kiến trúc YOLOv8-Seg hybrid** (ViT ở backbone, CBAM ở neck/head) cho phân đoạn **người / đầu / mũ** — đây là **trọng tâm đề tài** và **đang trong quá trình triển khai** (huấn luyện, tinh chỉnh YAML, tích hợp Ultralytics), **chưa hoàn tất** tại thời điểm báo cáo.
 
-## Mục tiêu dự án
+Song song, pipeline sử dụng một **mô-đun phát hiện phương tiện** (YOLOv8 + tracker) chỉ với vai trò **phụ trợ**: định vị ROI, theo dõi, logic vượt đèn — **không phải đối tượng nghiên cứu chính**. Các số liệu mAP và hình ảnh đánh giá trên checkpoint `vietnam_vehicle_v2` được đính kèm như **tài liệu tham khảo / baseline phụ**, không thay thế cho kết quả của mô hình hybrid.
 
-- Ứng dụng YOLO + Tracking + Segmentation hybrid (CNN + attention) vào bài toán giao thông
-- Hai mô hình chuyên biệt: phương tiện và người–mũ–đầu
-- Xây dựng pipeline từ video → phát hiện vi phạm → bằng chứng hình ảnh
-- Phục vụ mục đích nghiên cứu – học tập – demo hệ thống giám sát giao thông
-- Làm rõ và tối ưu **kiến trúc hybrid YOLOv8 + CBAM + ViT** cho bài toán **3 lớp**: `person`, `head`, `helmet`
+Hướng mở rộng: hoàn thiện thực nghiệm hybrid, nhận dạng biển số, tối ưu suy luận thời gian thực.
 
-## Trọng tâm dự án: kiến trúc YOLOv8 Hybrid CBAM–ViT Segmentation
+**Từ khóa (Keywords):** phát hiện vi phạm giao thông; YOLOv8; phân đoạn thể hiện; CBAM; Vision Transformer; theo dõi đa đối tượng.
 
-Sơ đồ dưới mô tả **YOLOv8-Hybrid CBAM-ViT Segmentation** (3 classes), cấu hình tham chiếu: `yolov8_hybrid_cbam_vit.yaml`. Luồng dữ liệu: ảnh đầu vào (3 kênh, H×W) → **Backbone** trích đặc trưng đa tỉ lệ → **Neck** hợp nhất P3/P4/P5 → **Segment head** xuất **mặt nạ 3 lớp** (người / đầu / mũ).
+---
 
-![Kiến trúc YOLOv8 Hybrid CBAM–ViT Segmentation (3 lớp)](docs/images/yolov8_hybrid_cbam_vit_architecture.png)
+## 1. Giới thiệu (Introduction)
 
-### Tóm tắt theo khối
+Giao thông đô thị tại Việt Nam đặc trưng bởi mật độ xe máy cao, cảnh quan phức tạp và nhiễu nền, khiến các hệ thống chỉ dựa trên quy tắc thủ công khó mở rộng quy mô. Các phương pháp học sâu cho phép học trực tiếp từ dữ liệu ảnh/video; riêng bài toán **mũ–đầu–người**, phân đoạn mức pixel phù hợp hơn so với chỉ hộp giới hạn khi cần suy luận chi tiết vùng đội mũ và số người trên xe.
 
-| Phần | Nội dung chính |
-|------|----------------|
-| **Backbone** | Chuỗi `Conv` / `C2f` tạo đặc trưng; **P3 (stride 8)**, **P4 (stride 16)**, **P5 (stride 32)**. **CBAM** gắn sau đặc trưng P3, P4; tại **P5** có **ViT layer** (1024 kênh), tiếp **SPPF**, rồi **CBAM (P5)** — ViT thu ngữ cảnh toàn cục, CBAM làm nổi bật kênh/không gian trước khi đưa lên neck. |
-| **Neck (Head fusion)** | `Upsample` + `Concat` nối đặc trưng đa tỉ lệ, các lớp `C2f` (512 → 256) với **chuẩn hoá kênh** giữa backbone và head để tránh lệch kích thước tensor. |
-| **Prediction** | Module **Segment** với tham số kiểu `[nc: 3, 32, 3]` — **3 class** segmentation; đầu ra: **bản đồ phân đoạn** (mask) cho từng lớp. |
+**Đóng góp dự kiến / trọng tâm:**
 
-**Chú thích màu (legend trong sơ đồ):** `Conv` (xanh dương), `C2f` (xanh lá), `SPPF` (cam), `CBAM` (vàng), `Segment` (đỏ đậm).
+1. **Thiết kế và hiện thực hóa** kiến trúc **YOLOv8-Seg + ViT + CBAM** cho ba lớp ngữ nghĩa — phần này **đang làm dở**, sẽ bổ sung kết quả định lượng khi hoàn tất.
+2. **Pipeline hai tầng** trong đó tầng phương tiện chỉ là **tiền xử lý phụ trợ**; tầng hybrid mới mang tính **đề xuất phương pháp** của luận văn / báo cáo.
+3. **Mô-đun vehicle** (`vietnam_vehicle_v2`): có số liệu tham khảo — **không** coi là đóng góp lý thuyết chính, chỉ phục vụ minh họa pipeline và đối chiếu triển khai.
 
-## Kiến trúc tổng thể hệ thống
+---
+
+## 2. Phương pháp đề xuất (Proposed Method)
+
+### 2.1. Pipeline tổng thể
+
+Luồng xử lý từ camera đến lưu trữ vi phạm được mô tả như sau:
 
 ```
 Camera / Video
       ↓
-Model 1: Vehicle Detection + Tracking
+[Phụ trợ] Vehicle Detection + Tracking
       ↓
 Phát hiện hành vi vi phạm (logic) + Trigger Capture (khi vi phạm)
       ↓
-Model 2 (trọng tâm): YOLOv8-Seg + CBAM + ViT — helmet / head / person
+[Trọng tâm — đang triển khai] YOLOv8-Seg + CBAM + ViT — helmet / head / person
       ↓
 Lưu DB & Xuất báo cáo vi phạm
 ```
 
-## Các mô hình trong hệ thống
+**Tầng phương tiện** chỉ cung cấp bbox/track ID phục vụ ROI và luật giao thông. **Tầng hybrid** là nơi xử lý chính cho mũ–đầu–người; trạng thái hiện tại: **chưa xong** (xem §3, §5).
 
-### Model 1 – Vehicle Detection & Tracking
+### 2.2. Động lực hybrid CNN–Transformer–Attention
 
-**Nhiệm vụ**
-- Phát hiện phương tiện và người tham gia giao thông
-- Theo dõi đối tượng qua nhiều frame
-- Phục vụ phát hiện hành vi vượt đèn đỏ
+- **CNN (YOLO backbone/neck):** hiệu quả tính toán, đặc trưng đa tỉ lệ phù hợp phát hiện thời gian thực.
+- **ViT ở backbone (nhánh độ phân giải thấp, ví dụ P5):** mô hình hóa phụ thuộc xa, hỗ trợ vật thể nhỏ hoặc bị che khuất trong ngữ cảnh đông đúc.
+- **CBAM ở nhiều mức (P3, P4, P5 và neck):** làm nổi bật kênh và vị trí không gian, giảm nhiễu nền, cải thiện biên mặt nạ so với backbone thuần CNN.
 
-**Công nghệ**
-- YOLOv8 (Detection hoặc Segmentation)
-- DeepSORT / ByteTrack
+---
 
-**Class label (checkpoint `vietnam_vehicle_v2`)**
-- `car`, `motocycle` (ghi chú: tên lớp trong dataset), `truck`, `bus`
+## 3. Kiến trúc hybrid YOLOv8–CBAM–ViT (trọng tâm đề tài — *work in progress*)
 
-**Output**
-- Bounding box / mask
-- Track ID
-- Quỹ đạo di chuyển
+**Trạng thái:** đang xây dựng / nhúng module (YAML tùy chỉnh, chỉnh `parse_model`, huấn luyện, đánh giá). **Chưa có** bộ số liệu đầy đủ tương đương mục phương tiện bên dưới.
 
-#### Kết quả huấn luyện – `VehicleModel/vietnam_vehicle_v2`
+Cấu hình tham chiếu (mục tiêu): `yolov8_hybrid_cbam_vit.yaml`. Đầu vào: tensor ảnh (3 kênh, H×W). Đầu ra mong muốn: **bản đồ phân đoạn ba lớp** `person`, `head`, `helmet`.
 
-Dữ liệu huấn luyện phản ánh giao thông Việt Nam: lớp **xe máy** và **ô tô** chiếm đa số; **xe tải** và **xe buýt** ít mẫu hơn (mất cân bằng lớp). Phần lớn bbox có kích thước nhỏ trên khung hình (xe ở xa / góc rộng).
+![Hình 1. Kiến trúc YOLOv8 Hybrid CBAM–ViT Segmentation (3 lớp)](image/Gemini_Generated_Image_d2hbaqd2hbaqd2hb%20%281%29.png)
 
-![Phân bố lớp và thống kê bbox – labels](VehicleModel/vietnam_vehicle_v2/labels.jpg)
+**Bảng 1. Tóm tắt khối chức năng**
 
-**Batch huấn luyện (mosaic augmentation)** — ghép nhiều ảnh giao thông vào một tile, nhãn `0–3` tương ứng `car`, `motocycle`, `truck`, `bus`.
+| Thành phần | Mô tả |
+|------------|--------|
+| Backbone | Chuỗi Conv/C2f; đặc trưng đa tỉ lệ P3 (stride 8), P4 (stride 16), P5 (stride 32). CBAM sau P3, P4; tại P5: ViT (1024 kênh) → SPPF → CBAM. |
+| Neck | Upsample, Concat, C2f (chuẩn hóa kênh giữa backbone và head). |
+| Head | Module Segment (tham số dạng `[nc: 3, 32, 3]`), sinh mặt nạ phân đoạn. |
 
-![Train batch – mosaic & nhãn](VehicleModel/vietnam_vehicle_v2/train_batch0.jpg)
+**Chú thích màu trên sơ đồ:** Conv (xanh dương), C2f (xanh lá), SPPF (cam), CBAM (vàng), Segment (đỏ đậm).
 
-**Tiến trình huấn luyện (~150 epoch)** — loss train giảm; `metrics/mAP50(B)` khoảng **0.86–0.87**, `mAP50-95(B)` khoảng **0.68** cuối đoạn. Lưu ý: nếu **`val/cls_loss` tăng dần** trong khi train/cls giảm, có dấu hiệu **overfitting** phân lớp — có thể tăng augmentation, early stopping hoặc điều chỉnh regularization.
+---
 
-![Loss & metrics theo epoch – results](VehicleModel/vietnam_vehicle_v2/results.png)
+## 4. Module phụ trợ: phát hiện phương tiện và theo dõi *(không phải trọng tâm nghiên cứu)*
 
-**Đường cong Precision–Recall (mAP@0.5 theo lớp)**
+Mục này mô tả **YOLOv8 detection chuẩn** trên tập `vietnam_vehicle_v2` nhằm **hỗ trợ pipeline** (ROI, tracking, vượt đèn). Đây **không** phải đóng góp phương pháp chính của đề tài; các biểu đồ và bảng sau chỉ mang tính **tham khảo / baseline triển khai**.
+
+### 4.1. Bài toán và nhãn
+
+- **Nhiệm vụ:** phát hiện lớp phương tiện, theo dõi khung thời gian, hỗ trợ logic vượt đèn đỏ.
+- **Công nghệ:** YOLOv8 (detection); DeepSORT / ByteTrack.
+- **Lớp (checkpoint `vietnam_vehicle_v2`):** `car`, `motocycle`, `truck`, `bus` (ghi chú: tên lớp `motocycle` theo dataset).
+- **Đầu ra:** bounding box, track ID, quỹ đạo (tùy cấu hình tracker).
+
+### 4.2. Đặc điểm dữ liệu huấn luyện
+
+Tập huấn luyện phản ánh giao thông Việt Nam: **xe máy** và **ô tô** chiếm đa số; **xe tải** và **xe buýt** thưa hơn (mất cân bằng lớp). Phân bố bbox thiên về **đối tượng nhỏ trên khung hình** (xe ở xa, góc camera rộng).
+
+![Hình 2. Thống kê phân bố lớp và bbox — labels](VehicleModel/vietnam_vehicle_v2/labels.jpg)
+
+![Hình 3. Batch huấn luyện (mosaic); nhãn 0–3: car, motocycle, truck, bus](VehicleModel/vietnam_vehicle_v2/train_batch0.jpg)
+
+### 4.3. Quá trình huấn luyện (giai đoạn ~150 epoch)
+
+Loss huấn luyện giảm; trên tập kiểm định, `metrics/mAP50(B)` khoảng **0.86–0.87**, `mAP50-95(B)` khoảng **0.68** ở cuối quá trình. **Thảo luận:** nếu `val/cls_loss` **tăng** trong khi `train/cls_loss` giảm, có dấu hiệu **quá khớp (overfitting)** nhánh phân lớp; có thể xem xét tăng tăng cường dữ liệu, dừng sớm hoặc điều chỉnh regularization.
+
+![Hình 4. Loss và metrics theo epoch](VehicleModel/vietnam_vehicle_v2/results.png)
+
+### 4.4. Kết quả định lượng
+
+**Bảng 2. mAP@0.5 theo lớp (validation)**
 
 | Lớp | mAP@0.5 |
 |-----|---------|
@@ -98,80 +115,58 @@ Dữ liệu huấn luyện phản ánh giao thông Việt Nam: lớp **xe máy**
 | bus | 0.795 |
 | **Trung bình (all classes)** | **0.888** |
 
-![Precision–Recall curve](VehicleModel/vietnam_vehicle_v2/BoxPR_curve.png)
+![Hình 5. Đường cong Precision–Recall](VehicleModel/vietnam_vehicle_v2/BoxPR_curve.png)
 
-**Đường cong F1 theo ngưỡng confidence**
+**Điểm F1–confidence (tham khảo triển khai):** trung bình mọi lớp đạt **F1 ≈ 0.84** tại **confidence ≈ 0.394** (cần hiệu chỉnh theo đánh đổi precision/recall).
 
-- Điểm tối ưu gợi ý (trung bình mọi lớp): **F1 ≈ 0.84** tại **confidence ≈ 0.394** (điều chỉnh theo ưu tiên precision hay recall khi triển khai).
+![Hình 6. Đường cong F1–Confidence](VehicleModel/vietnam_vehicle_v2/BoxF1_curve.png)
 
-![F1–Confidence curve](VehicleModel/vietnam_vehicle_v2/BoxF1_curve.png)
+![Hình 7. Precision–Confidence và Recall–Confidence](VehicleModel/vietnam_vehicle_v2/BoxP_curve.png)
 
-**Precision và Recall theo confidence**
+![Hình 8. (tiếp) Recall–Confidence](VehicleModel/vietnam_vehicle_v2/BoxR_curve.png)
 
-![Precision–Confidence curve](VehicleModel/vietnam_vehicle_v2/BoxP_curve.png)
+**Phân tích confusion matrix:** lớp **bus** có chỉ số thấp nhất trong nhóm; xuất hiện nhầm **bus → car** và **bus → background**. **False positive** nền → dự đoán `car` / `motocycle` gợi ý bổ sung mẫu nền âm hoặc điều chỉnh ngưỡng.
 
-![Recall–Confidence curve](VehicleModel/vietnam_vehicle_v2/BoxR_curve.png)
+![Hình 9. Ma trận nhầm lẫn (chuẩn hóa)](VehicleModel/vietnam_vehicle_v2/confusion_matrix_normalized.png)
 
-**Ma trận nhầm lẫn**
+![Hình 10. Ma trận nhầm lẫn (số đếm)](VehicleModel/vietnam_vehicle_v2/confusion_matrix.png)
 
-- Lớp **bus** yếu nhất so với các lớn còn lại; có nhầm **bus → car** và tỉ lệ **bus → background**.
-- Cần chú ý **false positive**: vùng nền đôi khi bị dự đoán thành `car` / `motocycle` — có thể bổ sung mẫu nền âm (hard negatives) hoặc tinh chỉnh ngưỡng confidence.
+---
 
-![Confusion matrix (normalized)](VehicleModel/vietnam_vehicle_v2/confusion_matrix_normalized.png)
+## 5. Phân đoạn người–đầu–mũ: YOLO hybrid *(đề xuất chính — đang thực hiện)*
 
-![Confusion matrix (số đếm)](VehicleModel/vietnam_vehicle_v2/confusion_matrix.png)
+### 5.1. Nhiệm vụ và nhãn
 
-### Model 2 – Segmentation người / đầu / mũ (Hybrid YOLOv8-Seg + CBAM + ViTs) — **trọng tâm dự án**
+- Phân đoạn mask cho **`person`**, **`head`**, **`helmet`** để suy luận không đội mũ và số người (kết hợp tầng phương tiện phụ trợ).
+- **Đầu vào:** ảnh toàn cảnh hoặc crop từ ROI do module §4 cung cấp.
 
-**Nhiệm vụ**
-- Phân đoạn (mask) **person**, **head**, **helmet** để suy ra không đội mũ và ước lượng số người trên xe
-- Phát hiện hành vi chở quá số người (kết hợp logic với Model 1)
+**Lưu ý:** huấn luyện end-to-end, metric mAP/mask IoU và hình ảnh kết quả cho tầng này **sẽ được bổ sung** khi mô hình hybrid hoàn tất.
 
-**Kiến trúc chi tiết** nằm ở mục **«Trọng tâm dự án: kiến trúc YOLOv8 Hybrid CBAM–ViT Segmentation»** (sơ đồ + bảng tóm tắt) và file cấu hình `yolov8_hybrid_cbam_vit.yaml`.
-
-**Vai trò từng thành phần (synergy)**
+### 5.2. Synergy ViT–CBAM
 
 | Thành phần | Vai trò |
 |------------|--------|
-| **ViT (Backbone, P5)** | Ngữ cảnh toàn cục, hỗ trợ vật thể nhỏ / khó (che khuất, nền rối) |
-| **CBAM (sau P3, P4, P5 và trên neck)** | Tinh chỉnh không gian–kênh, giảm nhiễu, cải thiện biên mask |
-| **SPPF (P5)** | Nhiều receptive field, bổ sung sau ViT trước CBAM cuối backbone |
+| ViT (P5) | Ngữ cảnh toàn cục, hỗ trợ chi tiết khó |
+| CBAM | Attention kênh–không gian, giảm nhiễu, biên mask rõ hơn |
+| SPPF | Đa receptive field sau ViT, trước CBAM cuối backbone |
 
-**Cộng hưởng:** Transformer ở backbone bù hạn chế receptive field CNN; CBAM ở neck/head tinh chỉnh tọa độ và kênh → mask ổn định, sắc hơn so với chỉ CNN.
+### 5.3. Quy tắc vi phạm (mẫu triển khai)
 
-**Công nghệ**
-- YOLOv8-Seg + module **Segment** (`nc = 3`)
-- CBAM theo sơ đồ (P3, P4, P5 + neck)
-- ViT layer tích hợp tại nhánh độ phân giải thấp (P5)
+- **Không đội mũ:** ≥ *N* khung liên tiếp không phát hiện `helmet` trên người điều khiển (N cấu hình được).
+- **Chở quá số người:** số instance `person` vượt ngưỡng so với loại phương tiện (ví dụ xe máy) do Model 1 xác định.
 
-**Dữ liệu đầu vào**
-- Ảnh / crop từ vùng quan tâm sau Model 1 (ví dụ xe máy + người)
+---
 
-**Class label**
-- `person`
-- `head`
-- `helmet`
+## 6. Dữ liệu và tổ chức thí nghiệm
 
-**Logic vi phạm (gợi ý)**
+### 6.1. Thu thập và tiền xử lý
 
-*Không đội mũ:* ≥ N frame liên tiếp không có `helmet` trên người cướp xe → vi phạm (N tùy cấu hình).
+- Video giao thông; trích frame theo tần số phù hợp.
+- Lọc ảnh mờ (phương sai Laplacian), chuẩn hóa kích thước, tăng cường (lật, mờ, nhiễu).
 
-*Chở quá số người:* một phương tiện (ví dụ xe máy từ Model 1) + số instance `person` vượt ngưỡng quy định → vi phạm.
+### 6.2. Gán nhãn
 
-## Xử lý & tổ chức dữ liệu
-
-### 1. Dữ liệu thô
-- Video giao thông từ camera
-- Trích xuất frame theo FPS phù hợp
-
-### 2. Tiền xử lý
-- Loại bỏ ảnh quá mờ (Laplacian variance)
-- Resize ảnh về kích thước chuẩn
-- Augmentation: flip, blur, noise
-
-### 3. Annotation
-
-**Lưu ý:** Các model dùng chung dữ liệu ảnh/video, **KHÔNG** dùng chung label
+Hai bài toán dùng chung nguồn ảnh có thể nhưng **tách thư mục nhãn**:
 
 ```
 raw_images/
@@ -179,63 +174,58 @@ labels_model1/
 labels_model2/
 ```
 
-## Chiến lược huấn luyện (Training Strategy)
+### 6.3. Huấn luyện
 
-### Fine-tuning
-- Sử dụng pretrained YOLOv8
-- Freeze backbone giai đoạn đầu
-- Fine-tune head theo từng bài toán
-- Batch size & learning rate điều chỉnh theo GPU
+- Pretrained YOLOv8; có thể đóng băng backbone giai đoạn đầu rồi fine-tune head.
+- Loss: tổn thất mặc định YOLO (box + cls + dfl); cộng tổn thất mask khi segmentation.
+- **Hiện trạng:** baseline phương tiện (§4) đã có log đánh giá; **huấn luyện mô hình hybrid** (§3, §5) **đang tiến hành**, chưa gắn kết quả định lượng vào báo cáo cuối.
 
-### Loss function
-- YOLO default loss (box + cls + dfl)
-- Mask loss (nếu dùng segmentation)
+### 6.4. Chỉ số đánh giá
 
-## Đánh giá mô hình (Evaluation Metrics)
+- **Phát hiện / phân đoạn:** Precision, Recall, mAP@0.5, mAP@0.5:0.95, IoU (mask).
+- **Theo dõi:** MOTA, đổi ID, FPS.
 
-### Detection / Segmentation
-- Precision
-- Recall
-- mAP@0.5
-- mAP@0.5:0.95
-- IoU
+---
 
-### Tracking
-- MOTA
-- ID Switch
-- FPS
+## 7. Cơ chế ghi nhận vi phạm
 
-## Cơ chế phát hiện & ghi nhận vi phạm
+- Chỉ lưu bằng chứng khi có vi phạm (trigger theo luật).
+- Các loại lỗi độc lập; một phương tiện có thể ghi nhận nhiều vi phạm đồng thời.
 
-- Hệ thống chỉ chụp ảnh khi có vi phạm
-- Mỗi lỗi là module độc lập
-- Một phương tiện có thể vi phạm nhiều lỗi cùng lúc
+---
 
-**Ví dụ:**
-```
-Không vượt đèn đỏ ❌
-Nhưng:
-Không đội mũ bảo hiểm ✅
-→ Vẫn ghi nhận vi phạm
-```
+## 8. Kết luận (Conclusion)
 
-## Kết quả đầu ra
+Đề tài hướng tới **kiến trúc phân đoạn hybrid YOLOv8–ViT–CBAM** cho ba lớp người–đầu–mũ — **đây là hướng nghiên cứu chính** và vẫn **đang triển khai**. Mô-đun phát hiện phương tiện chỉ đóng vai trò **phụ trợ** trong pipeline; số liệu mAP **0.888** @0.5 trên `vietnam_vehicle_v2` minh họa **baseline phụ**, không đại diện cho kết quả cuối của đề tài.
 
-- Ảnh / video kèm mask và bbox vi phạm
-- Thời gian & loại vi phạm
-- Dữ liệu sẵn sàng hiển thị dashboard hoặc báo cáo
+Việc tiếp theo: **hoàn thiện** huấn luyện và đánh giá mô hình hybrid, sau đó mới tổng hợp so sánh với baseline CNN thuần (nếu có). Đồng thời có thể tối ưu suy luận (TensorRT), mở rộng OCR biển số, và các hành vi phức tạp (sai làn, ngược chiều).
 
-## Hướng phát triển
+---
 
-- Tích hợp nhận dạng biển số (detect biển + OCR) nếu cần mở rộng pipeline
-- Nhận diện đi ngược chiều / sai làn
-- Tối ưu realtime (TensorRT) cho backbone hybrid
-- Kết nối hệ thống IoT / Smart City
+## 9. Hướng nghiên cứu tiếp theo
 
-## Công nghệ sử dụng
+- **Ưu tiên:** kết thúc triển khai YOLO hybrid (YAML, loss mask, metric, ablation ViT/CBAM nếu cần).
+- Tích hợp phát hiện biển số và OCR khi cần định danh phương tiện.
+- Tối ưu realtime cho backbone hybrid trên thiết bị biên.
+- Mở rộng tích hợp IoT / smart city.
 
-- Python
-- YOLOv8 (Detection & Segmentation)
-- CBAM, kiến trúc ViT/Swin (backbone hybrid)
-- OpenCV
-- DeepSORT / ByteTrack
+---
+
+## Tài liệu tham khảo (References)
+
+1. Jocher, G., et al. *Ultralytics YOLOv8* (repository và tài liệu), 2023–2024.
+2. Woo, S., et al. *CBAM: Convolutional Block Attention Module*, ECCV, 2018.
+3. Dosovitskiy, A., et al. *An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale*, ICLR, 2021.
+4. Lin, T.-Y., et al. *Microsoft COCO: Common Objects in Context*, ECCV, 2014 (bối cảnh metric mAP).
+
+---
+
+## Phụ lục: Công nghệ và môi trường
+
+| Thành phần | Ghi chú |
+|------------|--------|
+| Ngôn ngữ | Python |
+| Framework phát hiện / phân đoạn | YOLOv8 (Ultralytics) |
+| Attention | CBAM; khối ViT trong backbone |
+| Xử lý ảnh / video | OpenCV |
+| Theo dõi | DeepSORT / ByteTrack |
