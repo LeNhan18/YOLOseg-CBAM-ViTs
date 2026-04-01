@@ -27,7 +27,7 @@ Hệ thống được thiết kế theo **pipeline hai mô hình** (vehicle dete
 
 Sơ đồ dưới mô tả **YOLOv8-Hybrid CBAM-ViT Segmentation** (3 classes), cấu hình tham chiếu: `yolov8_hybrid_cbam_vit.yaml`. Luồng dữ liệu: ảnh đầu vào (3 kênh, H×W) → **Backbone** trích đặc trưng đa tỉ lệ → **Neck** hợp nhất P3/P4/P5 → **Segment head** xuất **mặt nạ 3 lớp** (người / đầu / mũ).
 
-![Kiến trúc YOLOv8 Hybrid CBAM–ViT Segmentation (3 lớp)](docs/images/yolov8_hybrid_cbam_vit_architecture.png)
+![Kiến trúc YOLOv8 Hybrid CBAM–ViT Segmentation (3 lớp)](image/Gemini_Generated_Image_d2hbaqd2hbaqd2hb%20%281%29.png)
 
 ### Tóm tắt theo khối
 
