@@ -132,19 +132,89 @@ python traffic_hybrid_system.py --video path/to/video.mp4 --show
 
 ---
 
-## 9. Trạng thái hiện tại
+## 9. Kết quả thực nghiệm Model 2 (YOLOv26-Hybrid)
 
-- Đã có kiến trúc YOLO26-Hybrid hoàn chỉnh ở mức thiết kế và tích hợp module.
-- Đã có mã CBAM và TransformerBlock riêng trong thư mục `scripts/`.
-- Đang tiếp tục tinh chỉnh huấn luyện/evaluate cho segmentation 3 lớp theo kiến trúc hybrid.
+Thiết lập đánh giá: huấn luyện 100 epochs, báo cáo đồng thời cho nhánh box (B) và mask (M).
+
+### 9.1 Tổng quan learning curves
+
+![YOLOv26 Hybrid metrics and losses](result/Yolov26hybrid_metrics.png)
+
+Nhận xét chính:
+
+- mAP tăng nhanh trong các epoch đầu và hội tụ ổn định về cuối quá trình.
+- Đường loss train/val giảm đều, không xuất hiện phân kỳ lớn giữa train và validation.
+
+### 9.2 Chỉ số định lượng ở epoch cuối (epoch = 100)
+
+| Nhánh | Precision | Recall | mAP50 | mAP50-95 |
+|------|-----------|--------|-------|----------|
+| Box (B) | 0.8345 | 0.6369 | 0.8200 | 0.7278 |
+| Mask (M) | 0.8081 | 0.6614 | 0.8097 | 0.7097 |
+
+Loss tại epoch 100:
+
+- Train: box = 0.1750, seg = 0.1391, cls = 0.5137.
+- Validation: box = 0.0930, seg = 0.0650, cls = 0.4650.
+
+### 9.3 Chỉ số tốt nhất trong quá trình huấn luyện
+
+| Metric | Best value | Ghi chú |
+|-------|------------|---------|
+| mAP50 (B) | 0.8200 | Đạt và duy trì ổn định ở nhiều epoch cuối |
+| mAP50-95 (B) | 0.7300 | Mức đỉnh xấp xỉ 0.73 |
+| mAP50 (M) | 0.8200 | Mức đỉnh của nhánh mask |
+| mAP50-95 (M) | 0.7300 | Mức đỉnh xấp xỉ 0.73 |
+| Precision (B) | 0.8800 | Đỉnh theo từng epoch |
+| Recall (B) | 0.8800 | Có dao động theo epoch |
+
+### 9.4 Confusion matrix (normalized)
+
+![YOLOv26 Hybrid confusion matrix normalized](result/Yolov26hybrid_confusion_matrix_normalized.png)
+
+Ma trận chuẩn hóa theo lớp thật:
+
+| True class | Pred person | Pred head | Pred helmet | Pred background |
+|-----------|-------------|-----------|-------------|-----------------|
+| person | 0.8195 | 0.0548 | 0.0342 | 0.0832 |
+| head | 0.0248 | 0.7750 | 0.0728 | 0.1078 |
+| helmet | 0.0291 | 0.0893 | 0.8305 | 0.1142 |
+| background | 0.1266 | 0.0808 | 0.0626 | 0.6948 |
+
+Kết luận từ confusion matrix:
+
+- Lớp helmet và person có tỉ lệ nhận đúng cao nhất (xấp xỉ 0.83 và 0.82).
+- Lớp head khó hơn, dễ nhầm với helmet/background.
+- background có độ tinh khiết thấp hơn ba lớp đối tượng, phản ánh nhiễu nền trong bối cảnh giao thông thực.
+
+### 9.5 Vector analysis (PCA, error vector, cosine similarity)
+
+![YOLOv26 Hybrid vector analysis](result/Yolov26hybrid_vector_analysis.png)
+
+Tóm tắt:
+
+- PCA 2D cho thấy các cụm lớp tách tương đối rõ, nhưng head giao thoa với person/helmet nhiều hơn.
+- Misclassification rate (xấp xỉ từ error vector): person = 0.1805; head = 0.2250; helmet = 0.1695; background = 0.3052.
+- Cosine similarity giữa prototype lớp: person-head = 0.40; person-helmet = 0.44; person-background = 0.50; head-helmet = 0.56; head-background = 0.64; helmet-background = 0.64.
+
+Nhận xét: `head` và `background` là hai vùng gây nhầm lẫn chính; đây là hướng ưu tiên khi tối ưu dữ liệu và loss cho vòng huấn luyện tiếp theo.
 
 ---
 
-## 10. Hướng phát triển tiếp
+## 10. Trạng thái hiện tại
+
+- Đã có kiến trúc YOLO26-Hybrid hoàn chỉnh ở mức thiết kế và tích hợp module.
+- Đã có báo cáo thực nghiệm cho Model 2 với bộ hình metrics/confusion/vector.
+- Đã có mã CBAM và TransformerBlock riêng trong thư mục `scripts/`.
+
+---
+
+## 11. Hướng phát triển tiếp
 
 1. Ablation study: so sánh baseline YOLO thuần với YOLO26-Hybrid (ViT + CBAM).
-2. Tối ưu tốc độ suy luận thời gian thực (TensorRT/ONNX).
-3. Bổ sung OCR biển số và đồng bộ với backend báo cáo vi phạm.
+2. Tập trung giảm nhầm lẫn lớp `head` và `background` bằng tăng dữ liệu khó và tinh chỉnh loss/augmentation.
+3. Tối ưu tốc độ suy luận thời gian thực (TensorRT/ONNX).
+4. Bổ sung OCR biển số và đồng bộ với backend báo cáo vi phạm.
 
 ---
 
