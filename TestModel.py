@@ -1,28 +1,71 @@
-from ultralytics import YOLO
+"""
+Test nhanh giống kiểu cũ: mở video → xử lý từng frame → hiển thị.
+Dùng 2 weight: models/Vehicle.pt + models/ViTs+CBAM.pt (đèn đỏ + không mũ trên xe máy).
+
+Đổi video_path / đường dẫn model ở dưới. ESC thoát.
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
 import cv2
-import os
-model_path  = r"D:\nl\best (1).pt"
-model =YOLO(model_path)
-video_path = r"D:\nl\DatasetViPhamGiaoThong-20260211T113245Z-3-001\DatasetViPhamGiaoThong\Traffic059.mp4"
-cap = cv2.VideoCapture(video_path)
-while True:                             
+
+_ROOT = Path(__file__).resolve().parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+try:
+    import patch_ultralytics_custom_loss  # noqa: F401 — load seg .pt có BCEDiceLoss
+except ImportError:
+    pass
+
+from traffic_hybrid_system import HybridConfig, TrafficHybridSystem
+
+VIDEO_PATH = r"D:\nl\DatasetViPhamGiaoThong-20260211T113245Z-3-001\DatasetViPhamGiaoThong\Traffic063.mp4"
+VEHICLE_PT = _ROOT / "models" / "Vehicle.pt"
+SEG_PT = _ROOT / "models" / "ViTs+CBAM.pt"
+
+
+cfg = HybridConfig(
+    vehicle_weights=VEHICLE_PT,
+    seg_weights=SEG_PT,
+)
+
+sys_model = TrafficHybridSystem(cfg)
+cap = cv2.VideoCapture(VIDEO_PATH)
+
+if not cap.isOpened():
+    print("Không mở được video:", VIDEO_PATH)
+    sys.exit(1)
+
+while True:
     ret, frame = cap.read()
     if not ret:
         print("Hết video hoặc lỗi frame")
         break
 
     try:
-        results = model.track(frame, persist=True)
-        annotated = results[0].plot()
+        annotated, viol = sys_model.process_frame(frame)
     except Exception as e:
         print("Lỗi frame, skip:", e)
         continue
 
-    cv2.imshow("Tracking", annotated)
+    if viol.messages:
+        cv2.putText(
+            annotated,
+            viol.messages[-1][:60],
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 0, 255),
+            2,
+        )
+
+    cv2.imshow("TrafficHybrid (ESC thoat)", annotated)
 
     if cv2.waitKey(1) == 27:
         break
 
 cap.release()
-
 cv2.destroyAllWindows()
