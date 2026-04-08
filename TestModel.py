@@ -30,6 +30,10 @@ SEG_PT = _ROOT / "models" / "ViTs+CBAM.pt"
 cfg = HybridConfig(
     vehicle_weights=VEHICLE_PT,
     seg_weights=SEG_PT,
+    seg_only_mode=True,        # Tạm tắt Vehicle.pt, chỉ chạy ViTs+CBAM
+    conf_seg=0.35,             # Ngưỡng detect — tăng nếu vẫn quá nhiều nhiễu
+    max_mask_area_ratio=0.20,  # Bỏ qua mask bbox chiếm > 20% frame
+    debug_log_seg=True,        # In class nào đang detect ra console
 )
 
 sys_model = TrafficHybridSystem(cfg)

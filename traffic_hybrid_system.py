@@ -58,9 +58,7 @@ class HybridConfig:
 
     conf_vehicle: float = 0.35
     iou_vehicle: float = 0.5
-    # Giảm conf_seg để segmentation dễ phát hiện helmet/head hơn (đặc biệt với vật nhỏ).
-    # Trong giai đoạn debug nếu vẫn "0 detections", thử 0.01.
-    conf_seg: float = 0.05
+    conf_seg: float = 0.35
 
     # Vạch dừng: tỉ lệ theo chiều cao khung hình (0 = trên, 1 = dưới)
     stop_line_y_ratio: float = 0.78
@@ -96,9 +94,22 @@ class HybridConfig:
     debug_log_seg: bool = True
     debug_log_seg_max_per_frame: int = 3
     seg_imgsz: int = 640
+    # Fallback nhẹ hơn nếu 0 detection (không để quá thấp tránh noise)
+    seg_fallback_extra: Tuple[Tuple[float, int], ...] = (
+        (0.20, 960),
+        (0.10, 1280),
+    )
+    seg_max_det: int = 100
+
+    # Bỏ qua mask có diện tích bbox > X% frame (tránh mask phủ toàn khung)
+    max_mask_area_ratio: float = 0.20
 
     # Tỉ lệ overlap tối thiểu giữa seg box và moto crop để tính là "trong vùng xe máy"
     seg_overlap_threshold: float = 0.3
+
+    # ── Chế độ chỉ chạy ViTs+CBAM, bỏ qua Vehicle detection ──────────────────
+    # Bật = True để test riêng model seg mà không cần Vehicle.pt
+    seg_only_mode: bool = False
 
 
 @dataclass
@@ -226,6 +237,19 @@ class TrafficHybridSystem:
         self.veh_names: Dict[int, str] = self.det.names
         self.seg_names: Dict[int, str] = self.seg.names
 
+        _seg_task = getattr(self.seg, "task", None)
+        if _seg_task is None:
+            try:
+                _seg_task = getattr(self.seg.model, "task", None)
+            except Exception:
+                _seg_task = None
+        print(f"[ViTs+CBAM.pt] task={_seg_task!r}")
+        if _seg_task and str(_seg_task).lower() in ("detect", "detection"):
+            print(
+                ">>> LOI: Weight nay la YOLO DETECT, KHONG PHAI SEGMENTATION. "
+                "Khong co masks. Can file .pt train tu `yolo segment train` / model seg.",
+            )
+
         if self.cfg.debug_overlay_seg:
             print("Vehicle class names (Vehicle.pt):", self.veh_names)
             print("Seg class names (ViTs+CBAM.pt):", self.seg_names)
@@ -259,6 +283,43 @@ class TrafficHybridSystem:
             print(f"  person class ids : {self._ids_person}")
 
         self._frame_idx: int = 0
+        self._seg_warned_empty: bool = False
+
+    def _run_segmentation(self, frame: np.ndarray):
+        """
+        Chạy seg với chuỗi fallback (conf thấp dần + imgsz lớn hơn) nếu 0 detection.
+        """
+        cfg = self.cfg
+        attempts = [(cfg.conf_seg, cfg.seg_imgsz)] + list(cfg.seg_fallback_extra)
+        last = None
+        for conf, imgsz in attempts:
+            kwargs = dict(
+                conf=conf,
+                imgsz=imgsz,
+                max_det=cfg.seg_max_det,
+                verbose=False,
+                retina_masks=True,
+            )
+            try:
+                last = self.seg(frame, **kwargs)[0]
+            except TypeError:
+                kwargs.pop("retina_masks", None)
+                last = self.seg(frame, **kwargs)[0]
+
+            n = 0 if last.boxes is None else len(last.boxes)
+            if n > 0:
+                if not self._seg_warned_empty and self.cfg.debug_log_seg:
+                    print(f"[seg] OK: conf={conf} imgsz={imgsz} dets={n}")
+                self._seg_warned_empty = False
+                return last
+
+        if not self._seg_warned_empty and self.cfg.debug_log_seg:
+            print(
+                "[seg] Van 0 detection sau fallback. Kiem tra: (1) weight co phai seg khong, "
+                "(2) video/domain khac train, (3) giam conf_seg / tang seg_imgsz trong HybridConfig.",
+            )
+            self._seg_warned_empty = True
+        return last
 
     def _is_motorcycle(self, cls_id: int) -> bool:
         return int(cls_id) in self._moto_ids
@@ -373,8 +434,10 @@ class TrafficHybridSystem:
         light_roi = ratio_to_xyxy((w, h), cfg.traffic_light_roi_ratio)
         red = is_red_light_in_roi(frame, light_roi)
 
-        # --- Detection / Tracking xe ---
-        if track_ids:
+        # --- Detection / Tracking xe (bỏ qua khi seg_only_mode) ---
+        if cfg.seg_only_mode:
+            det_results = None
+        elif track_ids:
             det_results = self.det.track(
                 frame,
                 persist=True,
@@ -388,10 +451,8 @@ class TrafficHybridSystem:
                 frame, conf=cfg.conf_vehicle, iou=cfg.iou_vehicle, verbose=False
             )
 
-        # --- Segmentation toàn khung để tránh mất thông tin do scale crop nhỏ ---
-        seg_result = self.seg(
-            frame, conf=cfg.conf_seg, imgsz=cfg.seg_imgsz, verbose=False
-        )[0]
+        # --- Segmentation toàn khung (fallback conf/imgsz nếu 0 det) ---
+        seg_result = self._run_segmentation(frame)
 
         # FIX: lấy boxes/cls/masks an toàn, trả về array rỗng thay vì None
         if seg_result.boxes is not None and len(seg_result.boxes) > 0:
@@ -421,15 +482,71 @@ class TrafficHybridSystem:
             )
 
         annotated = frame.copy()
+        frame_area = h * w
 
-        # Overlay seg (debug)
-        if cfg.debug_overlay_seg and len(seg_boxes) > 0:
-            try:
-                seg_plot = seg_result.plot(conf=False, labels=True, masks=True)
-                if seg_plot is not None and seg_plot.shape == annotated.shape:
-                    annotated = cv2.addWeighted(annotated, 0.5, seg_plot, 0.5, 0)
-            except Exception:
-                pass
+        # Overlay seg: contour mask + nhãn nhỏ
+        if cfg.debug_overlay_seg and seg_masks is not None and len(seg_boxes) > 0:
+            _cls_colors = {
+                "helmet": (0, 255, 0),    # xanh lá
+                "head":   (0, 165, 255),  # cam
+                "person": (255, 0, 255),  # tím
+            }
+            _relevant_ids = set(self._ids_helmet) | set(self._ids_head) | set(self._ids_person)
+
+            for j in range(min(len(seg_boxes), len(seg_masks))):
+                sc = int(seg_clss[j]) if j < len(seg_clss) else -1
+                sname = self.seg_names.get(sc, str(sc)).lower()
+
+                # seg_only_mode: hiện tất cả class để debug
+                # chế độ thường: chỉ helmet/head/person
+                if not cfg.seg_only_mode and sc not in _relevant_ids:
+                    continue
+
+                # ── Lấy mask binary (instance segmentation pixel-level) ──────
+                try:
+                    m = seg_masks[j]
+                    m_np = np.asarray(m, dtype=np.float32)
+                    # retina_masks=True → mask đã full-res; nếu không thì resize
+                    if m_np.shape[0] != h or m_np.shape[1] != w:
+                        m_np = cv2.resize(m_np, (w, h), interpolation=cv2.INTER_NEAREST)
+                    m_bin = (m_np > 0.5).astype(np.uint8)
+                except Exception:
+                    continue
+
+                # Lọc mask quá lớn dựa trên SỐ PIXEL THỰC (không phải bbox)
+                mask_pixel_ratio = float(m_bin.sum()) / frame_area
+                if mask_pixel_ratio > cfg.max_mask_area_ratio:
+                    continue
+                # Bỏ qua mask quá nhỏ (noise)
+                if mask_pixel_ratio < 0.0002:
+                    continue
+
+                # Màu theo class
+                if sc in self._ids_helmet:
+                    color = _cls_colors["helmet"]
+                elif sc in self._ids_head:
+                    color = _cls_colors["head"]
+                elif sc in self._ids_person:
+                    color = _cls_colors["person"]
+                else:
+                    # Màu determin theo class id cho debug
+                    _h = (sc * 47 + 30) % 180
+                    hsv_c = np.uint8([[[_h, 220, 210]]])
+                    color = tuple(int(x) for x in cv2.cvtColor(hsv_c, cv2.COLOR_HSV2BGR)[0][0])
+
+                # Vẽ fill nhạt + contour
+                m_draw = m_bin * 255
+                overlay_mask = np.zeros_like(annotated)
+                overlay_mask[m_bin > 0] = color
+                annotated = cv2.addWeighted(annotated, 1.0, overlay_mask, 0.25, 0)
+                contours, _ = cv2.findContours(m_draw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(annotated, contours, -1, color, 2)
+
+                # Bbox + nhãn nhỏ
+                bx1, by1, bx2, by2 = map(int, seg_boxes[j])
+                cv2.rectangle(annotated, (bx1, by1), (bx2, by2), color, 1)
+                cv2.putText(annotated, sname, (bx1, max(0, by1 - 4)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
 
         # Vẽ vạch dừng + ROI đèn
         cv2.line(annotated, (0, stop_y), (w, stop_y), (0, 255, 255), 3)
@@ -451,8 +568,8 @@ class TrafficHybridSystem:
             (0, 0, 255) if red else (0, 180, 0), 2,
         )
 
-        r0 = det_results[0]
-        if r0.boxes is None or len(r0.boxes) == 0:
+        r0 = det_results[0] if det_results is not None else None
+        if r0 is None or r0.boxes is None or len(r0.boxes) == 0:
             return annotated, fv
 
         boxes = r0.boxes.xyxy.cpu().numpy()
